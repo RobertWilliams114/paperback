@@ -1,0 +1,16 @@
+{
+  "name": "paperback-sources",
+  "version": "1.0.0",
+  "description": "Personal, durable Paperback 0.8 extensions built on stable public APIs.",
+  "repositoryName": "Resilient Sources",
+  "scripts": {
+    "bundle": "paperback bundle",
+    "serve": "paperback serve",
+    "test": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@paperback/toolchain": "0.8.7",
+    "@paperback/types": "0.8.7",
+    "typescript": "^5.4.0"
+  }
+}
