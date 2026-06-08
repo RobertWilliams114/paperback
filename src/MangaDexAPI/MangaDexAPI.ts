@@ -80,7 +80,7 @@ const STATUS_MAP: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export const MangaDexAPIInfo: SourceInfo = {
-    version: "1.0.0",
+    version: "1.0.1",
     name: "MangaDex (API)",
     icon: "icon.png",
     author: "rjwil",
@@ -274,26 +274,51 @@ export class MangaDexAPI extends Source {
         const langQuery = languages.map((l) => `translatedLanguage[]=${l}`).join("&")
         const ratingQuery = ALL_RATINGS.map((r) => `contentRating[]=${r}`).join("&")
 
-        const chapters: Chapter[] = []
+        // Gather raw chapters across every feed page first, then sort ourselves.
+        // Ordering must never depend on the API's page order — that was the cause
+        // of some titles showing up reversed.
+        const collected: {
+            id: string
+            chapNum: number
+            volume: number
+            name: string
+            langCode: string
+            group: string
+            time: Date
+        }[] = []
+
         let offset = 0
         const limit = 500
         let total = Infinity
-        let sortingIndex = 0
 
-        while (offset < total) {
+        // MangaDex caps feed offset at 10000; stay within it to avoid a 400 that
+        // would otherwise blank the entire chapter list.
+        while (offset < total && offset < 10000) {
             const url =
                 `${API_BASE}/manga/${mangaId}/feed` +
                 `?limit=${limit}&offset=${offset}` +
                 `&${langQuery}&${ratingQuery}` +
                 `&includes[]=scanlation_group` +
-                `&order[volume]=desc&order[chapter]=desc` +
+                `&order[volume]=asc&order[chapter]=asc` +
                 `&includeFutureUpdates=0`
-            const json = await this.fetchJSON(url)
+
+            let json: any
+            try {
+                json = await this.fetchJSON(url)
+            } catch (error) {
+                // A transient failure on a later page shouldn't blank the whole
+                // list — keep what we already have. A first-page failure still
+                // surfaces (genuine error) by re-throwing.
+                if (collected.length === 0) throw error
+                break
+            }
             total = json.total ?? 0
 
             for (const item of json.data ?? []) {
                 const attributes = item.attributes
-                // Skip externally-hosted chapters: they have no readable pages here.
+                // Skip externally-hosted chapters (licensed titles, etc.): they
+                // carry no readable pages, so including them would only produce
+                // blank chapters when opened.
                 if (attributes.externalUrl && (attributes.pages ?? 0) === 0) {
                     continue
                 }
@@ -302,32 +327,48 @@ export class MangaDexAPI extends Source {
                         .filter((r: any) => r.type === "scanlation_group")
                         .map((r: any) => r.attributes?.name)
                         .filter((n: any) => n)
-                        .join(", ") || "Unknown"
+                        .join(", ") || "No Group"
 
-                const chapNum = parseFloat(attributes.chapter) || 0
-                const volume = parseFloat(attributes.volume)
-
-                chapters.push(
-                    App.createChapter({
-                        id: item.id,
-                        chapNum,
-                        volume: isNaN(volume) ? 0 : volume,
-                        name: attributes.title || "",
-                        langCode: attributes.translatedLanguage ?? "en",
-                        group,
-                        time: new Date(
-                            attributes.publishAt ?? attributes.readableAt ?? Date.now(),
-                        ),
-                        sortingIndex: sortingIndex++,
-                    }),
-                )
+                const parsedChap = parseFloat(attributes.chapter)
+                const parsedVol = parseFloat(attributes.volume)
+                collected.push({
+                    id: item.id,
+                    chapNum: isNaN(parsedChap) ? 0 : parsedChap,
+                    volume: isNaN(parsedVol) ? 0 : parsedVol,
+                    name: attributes.title || "",
+                    langCode: attributes.translatedLanguage ?? "en",
+                    group,
+                    time: new Date(
+                        attributes.publishAt ?? attributes.readableAt ?? Date.now(),
+                    ),
+                })
             }
-            offset += limit
-            // Safety valve against runaway pagination.
+
             if ((json.data ?? []).length === 0) break
+            offset += limit
         }
 
-        return chapters
+        // Sort ascending by chapter (then volume, then upload time) and assign a
+        // matching sortingIndex. Keeping chapNum and sortingIndex consistent is
+        // what guarantees a correct, stable order across every title.
+        collected.sort((a, b) => {
+            if (a.chapNum !== b.chapNum) return a.chapNum - b.chapNum
+            if (a.volume !== b.volume) return a.volume - b.volume
+            return a.time.getTime() - b.time.getTime()
+        })
+
+        return collected.map((c, index) =>
+            App.createChapter({
+                id: c.id,
+                chapNum: c.chapNum,
+                volume: c.volume,
+                name: c.name,
+                langCode: c.langCode,
+                group: c.group,
+                time: c.time,
+                sortingIndex: index,
+            }),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -341,10 +382,19 @@ export class MangaDexAPI extends Source {
         const baseUrl = json.baseUrl
         const hash = json.chapter?.hash
         const dataSaver = await getDataSaver(this.stateManager)
-        const quality = dataSaver ? "data-saver" : "data"
-        const files: string[] = dataSaver
+
+        // Use the requested quality, but fall back to the other if its array is
+        // empty so a chapter never renders blank just because one list was missing.
+        let quality = dataSaver ? "data-saver" : "data"
+        let files: string[] = dataSaver
             ? json.chapter?.dataSaver ?? []
             : json.chapter?.data ?? []
+        if (files.length === 0) {
+            quality = dataSaver ? "data" : "data-saver"
+            files = dataSaver
+                ? json.chapter?.data ?? []
+                : json.chapter?.dataSaver ?? []
+        }
 
         const pages = files.map((f) => `${baseUrl}/${quality}/${hash}/${f}`)
 
