@@ -80,7 +80,7 @@ const STATUS_MAP: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export const MangaDexAPIInfo: SourceInfo = {
-    version: "1.0.1",
+    version: "1.0.2",
     name: "MangaDex (API)",
     icon: "icon.png",
     author: "rjwil",
@@ -331,11 +331,20 @@ export class MangaDexAPI extends Source {
 
                 const parsedChap = parseFloat(attributes.chapter)
                 const parsedVol = parseFloat(attributes.volume)
+                // Most MangaDex chapters have no title — fall back to a readable
+                // name so the chapter list never shows blank entries.
+                const rawChap = attributes.chapter
+                const title = (attributes.title ?? "").trim()
+                const name = title
+                    ? title
+                    : rawChap != null && `${rawChap}` !== ""
+                      ? `Chapter ${rawChap}`
+                      : "Oneshot"
                 collected.push({
                     id: item.id,
                     chapNum: isNaN(parsedChap) ? 0 : parsedChap,
                     volume: isNaN(parsedVol) ? 0 : parsedVol,
-                    name: attributes.title || "",
+                    name,
                     langCode: attributes.translatedLanguage ?? "en",
                     group,
                     time: new Date(
